@@ -2,7 +2,8 @@
 #提取更新文件并打包，2022/03/29，wwx
 #/*1、过滤restartService.sh文件
 #  2、打包时，修改数据库版本的状态
-#  3、添加电子病历浏览器打包模块 202301041426*/
+#  3、添加电子病历浏览器打包模块 202301041426
+#  4、调整打包逻辑，打全量包 202302061058*/
 #if [ $# = 0 ];then
 #	read -p "请输入版本号（如：V4.0.2）:" version
 #elif [ $# = 1 ];then
@@ -11,6 +12,11 @@
 #	echo "参数输入错误，已退出"
 #	exit
 #fi
+
+#前端
+ui=(nursingm payment weixin)
+#后端
+website=(zlchs.aer zlchs.clinicapath zlchs.gateway zlchs.payment zlchs.quartz zlchs.reportpush zlchs.ts zlchs.up.signalr zlchs.weixin zlsoft.message zlsoft.up.logger)
 #清理sql文件函数，$1为文件地址
  clear(){
 	#删除第一行
@@ -80,49 +86,48 @@ else
 fi
 #修改数据库版本的状态
 export PGPASSWORD=updb;/usr/local/pgsql/bin/psql -h 192.168.31.156 -U updb -d Versions -c "UPDATE patches SET  status = '已打包',pack_time = '${ADATE}' WHERE name in (${versions});">/dev/null
-#时间重置
->/etc/time.txt
-#获取此次后端更新文件路径
-find /usr/source/website ! -path '*log-data*' ! -path '*.pdf' ! -path '*cpapi*' ! -path '*restartService.sh' -newerct "${BDATE}" ! -newerct "${ADATE}" -type f -print >newfile.txt	#后端文件找到B-->A日期之间的文件，排除日志文件,排除插件文件，排除支付
-#遍历文件，获取目录
-while read line;do
-	#获取文件目录
-	dirname $line >mkdir.txt
-	#获取文件名
-	filename=`basename "$line"`
-	if [ "$filename" = "appsettings.json" -o "$filename" = "app.json" -o "$filename" = "database.config" -o "$filename" = "licenses.txt" -o "$filename" = "OrleansServer.json" ];then
-		a=`stat $line|grep 最近改动`
-		echo $line"，"$a
-	else
-		sed -i "s@/usr/source@${purl}@" mkdir.txt
-		url=(`cat mkdir.txt`)
-		#是否存在打包文件路径，不存在则创建
-		if [ ! -d "${url}/" ];then
-			mkdir -p ${url}
-		fi
-		#复制文件
-		cp -a "${line}" ${url}
-	fi
-done <newfile.txt
-#获取此次前端更新文件路径
-find /usr/source/ui ! -path '*.log' -newerct "${BDATE}" ! -newerct "${ADATE}" -type f -print >newfile.txt	#前端文件找到B-->A日期之间的文件
-#遍历文件，获取目录
-while read line;do
-	#获取文件目录
-	dirname "$line" >mkdir.txt
-	#获取文件名
-	filename=`basename "$line"`
-	#生成包路径
-	sed -i "s@/usr/source@${purl}@" mkdir.txt
-	url=(`cat mkdir.txt`)
-	#是否存在打包文件路径，不存在则创建
-	if [ ! -d "${url}/" ];then
-		mkdir -p ${url}
-	fi
-	#复制文件
-	cp -a "${line}" ${url}
 
+#获取单服务更新文件
+for value in ${website[@]};do
+	find /usr/source/website/${value} ! -path '*log-data*' ! -path '*.pdf' ! -path '*cpapi*' ! -path '*restartService.sh' -newerct "${BDATE}" ! -newerct "${ADATE}" -type f -print >newfile.txt	#后端文件找到B-->A日期之间的文件，排除日志文件,排除插件文件，排除支付
+	while read line;do
+		#获取文件目录
+		dirname $line >mkdir.txt
+		#获取文件名
+		filename=`basename "$line"`
+		if [ "$filename" = "appsettings.json" -o "$filename" = "app.json" -o "$filename" = "database.config" -o "$filename" = "licenses.txt" -o "$filename" = "OrleansServer.json" ];then
+			a=`stat $line|grep 最近改动`
+			echo $line"，"$a
+		else
+			sed -i "s@/usr/source@${purl}@" mkdir.txt
+			url=(`cat mkdir.txt`)
+			#是否存在打包文件路径，不存在则创建
+			if [ ! -d "${url}/" ];then
+				mkdir -p ${url}
+			fi
+			#复制文件
+			cp -a "${line}" ${url}
+		fi
 done <newfile.txt
+done
+#获取集群后端
+#是否存在路径，不存在则创建
+if [ ! -d "${purl}/website/" ];then
+	mkdir -p ${purl}/website
+fi
+cp -r /usr/play-package/element/ ${purl}/website/		#环境DLL
+cp -r /usr/play-package/website/* ${purl}/website/		#业务DLL
+
+#获取压缩前端文件
+#是否存在路径，不存在则创建
+if [ ! -d "${purl}/ui/" ];then
+	mkdir -p ${purl}/ui
+fi
+for value in ${ui[@]};do
+	cp -r /usr/source/ui/zlchs.${value}.ui ${purl}/ui/
+done
+find ${purl}/ui/ -name "appSettings.js" -exec rm -rf {} \;
+cp -r /usr/play-package/ui/* ${purl}/ui/
 
 #生成sql文件夹
 mkdir $purl/sql
@@ -162,13 +167,6 @@ EOF
 	if [ "${file}" = "zlchs.up.ui" ];then
 		cp /usr/update/zlsoft.up.resource.js ${purl}/ui/${file}/js/
 		sed -i "s/zsbbh/${version}/g" ${purl}/ui/${file}/js/zlsoft.up.resource.js
-	fi
-	if [ "${file}" = "zlchs.weixin.ui" ] || [ "${file}" = "zlchs.payment.ui" ] || [ "${file}" = "zlchs.paymentH5.ui" ] || [ "${file}" = "zlchs.emrbrowser.ui" ];then
-		rm -rf ${purl}/ui/${file}/*
-		cp -r /usr/source/ui/${file}/* ${purl}/ui/${file}/
-		rm -rf ${purl}/ui/zlchs.weixin.ui/admin-ui/appSettings.js
-		rm -rf ${purl}/ui/zlchs.paymentH5.ui/js/appSettings.js
-		rm -rf ${purl}/ui/zlchs.payment.ui/appSettings.js
 	fi
 done
 #添加报表模块
